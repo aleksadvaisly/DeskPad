@@ -1,4 +1,3 @@
-BuildTools/.build
-BuildTools/.swiftpm
-xcuserdata/
+docs/work/
 build/
+.DS_Store
