@@ -1,5 +1,6 @@
 docs/work/
 build/
+BuildTools/.build/
 DerivedData/
 *.xcodeproj/xcuserdata/
 *.xcodeproj/project.xcworkspace/xcuserdata/
