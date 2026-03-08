@@ -7,6 +7,7 @@ enum AppDelegateAction: Action {
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     var window: NSWindow!
+    var statusItem: NSStatusItem!
 
     func applicationDidFinishLaunching(_: Notification) {
         let viewController = ScreenViewController()
@@ -22,6 +23,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         window.contentMaxSize = CGSize(width: 5120, height: 2160)
         window.styleMask.insert(.resizable)
         window.collectionBehavior.insert(.fullScreenNone)
+
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        statusItem.button?.image = NSImage(systemSymbolName: "display", accessibilityDescription: "DeskPad")
+        let statusMenu = NSMenu()
+        statusMenu.addItem(NSMenuItem(title: "Hide Window", action: #selector(toggleWindow), keyEquivalent: ""))
+        statusMenu.addItem(NSMenuItem(title: "Quit DeskPad", action: #selector(NSApp.terminate), keyEquivalent: "q"))
+        statusItem.menu = statusMenu
 
         let mainMenu = NSMenu()
         let mainMenuItem = NSMenuItem()
@@ -39,7 +47,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         store.dispatch(AppDelegateAction.didFinishLaunching)
     }
 
+    @objc func toggleWindow() {
+        if window.isVisible {
+            window.orderOut(nil)
+            statusItem.menu?.item(at: 0)?.title = "Show Window"
+        } else {
+            window.makeKeyAndOrderFront(nil)
+            statusItem.menu?.item(at: 0)?.title = "Hide Window"
+        }
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_: NSApplication) -> Bool {
-        return true
+        return false
     }
 }

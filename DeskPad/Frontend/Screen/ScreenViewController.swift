@@ -35,29 +35,45 @@ class ScreenViewController: SubscriberViewController<ScreenViewData>, NSWindowDe
         store.dispatch(ScreenViewAction.setDisplayID(display.displayID))
         self.display = display
 
+        let systemWidth: UInt
+        let systemHeight: UInt
+        if let mainScreen = NSScreen.main {
+            let scale = mainScreen.backingScaleFactor
+            systemWidth = UInt(mainScreen.frame.size.width * scale)
+            systemHeight = UInt(mainScreen.frame.size.height * scale)
+        } else {
+            systemWidth = 1920
+            systemHeight = 1080
+        }
+
+        let presetModes: [(width: UInt, height: UInt)] = [
+            (5120, 1440),
+            (5120, 2160),
+            (3840, 1600),
+            (3440, 1440),
+            (3840, 2160),
+            (2560, 1440),
+            (1920, 1080),
+            (1600, 900),
+            (1366, 768),
+            (1280, 720),
+            (2560, 1600),
+            (1920, 1200),
+            (1680, 1050),
+            (1440, 900),
+            (1280, 800),
+        ]
+
+        var modes = [CGVirtualDisplayMode(width: systemWidth, height: systemHeight, refreshRate: 60)]
+        for preset in presetModes {
+            if preset.width != systemWidth || preset.height != systemHeight {
+                modes.append(CGVirtualDisplayMode(width: preset.width, height: preset.height, refreshRate: 60))
+            }
+        }
+
         let settings = CGVirtualDisplaySettings()
         settings.hiDPI = 1
-        settings.modes = [
-            // 32:9
-            CGVirtualDisplayMode(width: 5120, height: 1440, refreshRate: 60),
-            // 21:9 (239:100, 12:5)
-            CGVirtualDisplayMode(width: 5120, height: 2160, refreshRate: 60),
-            CGVirtualDisplayMode(width: 3840, height: 1600, refreshRate: 60),
-            CGVirtualDisplayMode(width: 3440, height: 1440, refreshRate: 60),
-            // 16:9
-            CGVirtualDisplayMode(width: 3840, height: 2160, refreshRate: 60),
-            CGVirtualDisplayMode(width: 2560, height: 1440, refreshRate: 60),
-            CGVirtualDisplayMode(width: 1920, height: 1080, refreshRate: 60),
-            CGVirtualDisplayMode(width: 1600, height: 900, refreshRate: 60),
-            CGVirtualDisplayMode(width: 1366, height: 768, refreshRate: 60),
-            CGVirtualDisplayMode(width: 1280, height: 720, refreshRate: 60),
-            // 16:10
-            CGVirtualDisplayMode(width: 2560, height: 1600, refreshRate: 60),
-            CGVirtualDisplayMode(width: 1920, height: 1200, refreshRate: 60),
-            CGVirtualDisplayMode(width: 1680, height: 1050, refreshRate: 60),
-            CGVirtualDisplayMode(width: 1440, height: 900, refreshRate: 60),
-            CGVirtualDisplayMode(width: 1280, height: 800, refreshRate: 60),
-        ]
+        settings.modes = modes
         display.apply(settings)
     }
 
