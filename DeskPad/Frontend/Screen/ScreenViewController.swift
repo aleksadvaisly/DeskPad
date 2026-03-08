@@ -6,6 +6,17 @@ enum ScreenViewAction: Action {
 }
 
 class ScreenViewController: SubscriberViewController<ScreenViewData>, NSWindowDelegate {
+    private static let warningStripeColor = makeWarningStripeColor()
+
+    var refreshRate: CGFloat = 60 {
+        didSet {
+            guard refreshRate != oldValue else {
+                return
+            }
+            applyDisplaySettings()
+        }
+    }
+
     override func loadView() {
         view = NSView()
         view.wantsLayer = true
@@ -17,6 +28,75 @@ class ScreenViewController: SubscriberViewController<ScreenViewData>, NSWindowDe
     private var isWindowHighlighted = false
     private var previousResolution: CGSize?
     private var previousScaleFactor: CGFloat?
+
+    private static func makeWarningStripeColor() -> NSColor {
+        // 7:10 gives a slope of 0.7, which is ~35 degrees and tiles seamlessly.
+        let unit = 8
+        let tileWidth = 10 * unit
+        let tileHeight = 7 * unit
+        let phasePeriod = 70.0 * CGFloat(unit)
+        let stripePhaseWidth = 34.0 * CGFloat(unit)
+        let backgroundColor = NSColor(calibratedRed: 0.98, green: 0.84, blue: 0.12, alpha: 1)
+        let stripeColor = NSColor(calibratedRed: 0.09, green: 0.09, blue: 0.0975, alpha: 1)
+        let backgroundComponents = backgroundColor.usingColorSpace(.deviceRGB)
+        let stripeComponents = stripeColor.usingColorSpace(.deviceRGB)
+
+        guard
+            let backgroundComponents,
+            let stripeComponents,
+            let bitmap = NSBitmapImageRep(
+                bitmapDataPlanes: nil,
+                pixelsWide: tileWidth,
+                pixelsHigh: tileHeight,
+                bitsPerSample: 8,
+                samplesPerPixel: 4,
+                hasAlpha: true,
+                isPlanar: false,
+                colorSpaceName: .deviceRGB,
+                bytesPerRow: 0,
+                bitsPerPixel: 0
+            )
+        else {
+            return backgroundColor
+        }
+
+        let subpixelGrid = 4
+        let totalSamples = CGFloat(subpixelGrid * subpixelGrid)
+
+        for y in 0 ..< tileHeight {
+            for x in 0 ..< tileWidth {
+                var stripeCoverage: CGFloat = 0
+
+                for sampleY in 0 ..< subpixelGrid {
+                    for sampleX in 0 ..< subpixelGrid {
+                        let samplePointX = CGFloat(x) + (CGFloat(sampleX) + 0.5) / CGFloat(subpixelGrid)
+                        let samplePointY = CGFloat(y) + (CGFloat(sampleY) + 0.5) / CGFloat(subpixelGrid)
+                        let rawPhase = 7.0 * samplePointX - 10.0 * samplePointY
+                        let normalizedPhase = rawPhase.truncatingRemainder(dividingBy: phasePeriod)
+                        let wrappedPhase = normalizedPhase >= 0 ? normalizedPhase : normalizedPhase + phasePeriod
+
+                        if wrappedPhase < stripePhaseWidth {
+                            stripeCoverage += 1
+                        }
+                    }
+                }
+
+                let blend = stripeCoverage / totalSamples
+                let color = NSColor(
+                    calibratedRed: backgroundComponents.redComponent + (stripeComponents.redComponent - backgroundComponents.redComponent) * blend,
+                    green: backgroundComponents.greenComponent + (stripeComponents.greenComponent - backgroundComponents.greenComponent) * blend,
+                    blue: backgroundComponents.blueComponent + (stripeComponents.blueComponent - backgroundComponents.blueComponent) * blend,
+                    alpha: 1
+                )
+                bitmap.setColor(color, atX: x, y: y)
+            }
+        }
+
+        let image = NSImage(size: NSSize(width: tileWidth, height: tileHeight))
+        image.addRepresentation(bitmap)
+        image.isTemplate = false
+        return NSColor(patternImage: image)
+    }
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -34,18 +114,15 @@ class ScreenViewController: SubscriberViewController<ScreenViewData>, NSWindowDe
         let display = CGVirtualDisplay(descriptor: descriptor)
         store.dispatch(ScreenViewAction.setDisplayID(display.displayID))
         self.display = display
+        applyDisplaySettings()
+    }
 
-        let systemWidth: UInt
-        let systemHeight: UInt
-        if let mainScreen = NSScreen.main {
-            let scale = mainScreen.backingScaleFactor
-            systemWidth = UInt(mainScreen.frame.size.width * scale)
-            systemHeight = UInt(mainScreen.frame.size.height * scale)
-        } else {
-            systemWidth = 1920
-            systemHeight = 1080
+    private func applyDisplaySettings() {
+        guard display != nil else {
+            return
         }
 
+        let systemResolution = currentSystemResolution()
         let presetModes: [(width: UInt, height: UInt)] = [
             (5120, 1440),
             (5120, 2160),
@@ -64,10 +141,18 @@ class ScreenViewController: SubscriberViewController<ScreenViewData>, NSWindowDe
             (1280, 800),
         ]
 
-        var modes = [CGVirtualDisplayMode(width: systemWidth, height: systemHeight, refreshRate: 60)]
+        var modes = [CGVirtualDisplayMode(
+            width: systemResolution.width,
+            height: systemResolution.height,
+            refreshRate: refreshRate
+        )]
         for preset in presetModes {
-            if preset.width != systemWidth || preset.height != systemHeight {
-                modes.append(CGVirtualDisplayMode(width: preset.width, height: preset.height, refreshRate: 60))
+            if preset.width != systemResolution.width || preset.height != systemResolution.height {
+                modes.append(CGVirtualDisplayMode(
+                    width: preset.width,
+                    height: preset.height,
+                    refreshRate: refreshRate
+                ))
             }
         }
 
@@ -77,11 +162,25 @@ class ScreenViewController: SubscriberViewController<ScreenViewData>, NSWindowDe
         display.apply(settings)
     }
 
+    private func currentSystemResolution() -> (width: UInt, height: UInt) {
+        let systemWidth: UInt
+        let systemHeight: UInt
+        if let mainScreen = NSScreen.main {
+            let scale = mainScreen.backingScaleFactor
+            systemWidth = UInt(mainScreen.frame.size.width * scale)
+            systemHeight = UInt(mainScreen.frame.size.height * scale)
+        } else {
+            systemWidth = 1920
+            systemHeight = 1080
+        }
+        return (width: systemWidth, height: systemHeight)
+    }
+
     override func update(with viewData: ScreenViewData) {
         if viewData.isWindowHighlighted != isWindowHighlighted {
             isWindowHighlighted = viewData.isWindowHighlighted
             view.window?.backgroundColor = isWindowHighlighted
-                ? NSColor(named: "TitleBarActive")
+                ? Self.warningStripeColor
                 : NSColor(named: "TitleBarInactive")
             if isWindowHighlighted {
                 view.window?.orderFrontRegardless()

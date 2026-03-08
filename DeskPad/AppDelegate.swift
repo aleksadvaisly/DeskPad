@@ -235,10 +235,16 @@ private final class DisplaySnapshotPublisher {
 class AppDelegate: NSObject, NSApplicationDelegate {
     var window: NSWindow!
     var statusItem: NSStatusItem!
+    private var viewController: ScreenViewController!
+    private var refreshRateMenuItem: NSMenuItem!
+    private var refreshRateOptions = [NSMenuItem]()
+    private var selectedRefreshRate: Int = 60
     private let displaySnapshotPublisher = DisplaySnapshotPublisher()
 
     func applicationDidFinishLaunching(_: Notification) {
         let viewController = ScreenViewController()
+        viewController.refreshRate = CGFloat(selectedRefreshRate)
+        self.viewController = viewController
         window = NSWindow(contentViewController: viewController)
         window.delegate = viewController
         window.title = "DeskPad"
@@ -256,6 +262,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.button?.image = NSImage(systemSymbolName: "display", accessibilityDescription: "DeskPad")
         let statusMenu = NSMenu()
         statusMenu.addItem(NSMenuItem(title: "Hide Window", action: #selector(toggleWindow), keyEquivalent: ""))
+        statusMenu.addItem(makeRefreshRateMenuItem())
         statusMenu.addItem(NSMenuItem(title: "Quit DeskPad", action: #selector(NSApp.terminate), keyEquivalent: "q"))
         statusItem.menu = statusMenu
 
@@ -274,6 +281,45 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         store.dispatch(AppDelegateAction.didFinishLaunching)
         displaySnapshotPublisher.start()
+    }
+
+    private func makeRefreshRateMenuItem() -> NSMenuItem {
+        let menuItem = NSMenuItem(title: "Refresh Rate", action: nil, keyEquivalent: "")
+        let submenu = NSMenu(title: "Refresh Rate")
+
+        let options = [30, 60]
+        refreshRateOptions = options.map { rate in
+            let item = NSMenuItem(
+                title: "\(rate) Hz",
+                action: #selector(selectRefreshRate(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.tag = rate
+            submenu.addItem(item)
+            return item
+        }
+
+        menuItem.submenu = submenu
+        refreshRateMenuItem = menuItem
+        updateRefreshRateMenuState()
+        return menuItem
+    }
+
+    private func updateRefreshRateMenuState() {
+        refreshRateOptions.forEach { item in
+            item.state = item.tag == selectedRefreshRate ? .on : .off
+        }
+    }
+
+    @objc private func selectRefreshRate(_ sender: NSMenuItem) {
+        guard sender.tag != selectedRefreshRate else {
+            return
+        }
+
+        selectedRefreshRate = sender.tag
+        viewController.refreshRate = CGFloat(selectedRefreshRate)
+        updateRefreshRateMenuState()
     }
 
     @objc func toggleWindow() {
