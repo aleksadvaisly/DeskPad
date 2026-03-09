@@ -620,6 +620,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         viewController.preferredDisplayMode = selectedDisplayMode
         viewController.preferredWindowFrame = selectedWindowFrame
         viewController.topContentInset = DeskPadWindowViewController.titleBarHeight
+        viewController.isWindowVisible = isWindowVisible
         viewController.onDisplayConfigurationChanged = { [weak self] resolution, scaleFactor in
             self?.didUpdateDisplayConfiguration(resolution: resolution, scaleFactor: scaleFactor)
         }
@@ -785,6 +786,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func applyWindowVisibilitySetting() {
+        screenViewController.isWindowVisible = isWindowVisible
         if isWindowVisible {
             window.makeKeyAndOrderFront(nil)
         } else {
@@ -871,7 +873,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func bringBackWindow() {
         if isWindowVisible == false {
             isWindowVisible = true
-            updateWindowVisibilityMenuState()
+            applyWindowVisibilitySetting()
             persistSettings()
         }
         NSApp.activate(ignoringOtherApps: true)

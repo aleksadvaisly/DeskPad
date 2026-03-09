@@ -86,4 +86,4 @@ The project runs SwiftFormat from an Xcode build phase during compilation.
 
 ## License
 
-MIT. See `LICENSE.md`.
+MIT -- see LICENSE.md.

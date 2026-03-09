@@ -57,6 +57,20 @@ class ScreenViewController: SubscriberViewController<ScreenViewData>, NSWindowDe
 
     var preferredWindowFrame: SavedWindowFrame?
     var topContentInset: CGFloat = 0
+    var isWindowVisible = true {
+        didSet {
+            guard isWindowVisible != oldValue else {
+                return
+            }
+
+            if isWindowVisible {
+                restartCapture()
+            } else {
+                stopCapture(clearContents: true)
+            }
+        }
+    }
+
     var isWindowCurrentlyHighlighted: Bool {
         isWindowHighlighted
     }
@@ -81,6 +95,7 @@ class ScreenViewController: SubscriberViewController<ScreenViewData>, NSWindowDe
     private var isWindowHighlighted = false
     private var previousResolution: CGSize?
     private var previousScaleFactor: CGFloat?
+    private var currentViewData: ScreenViewData?
     var onDisplayConfigurationChanged: ((CGSize, CGFloat) -> Void)?
     var onWindowFrameChanged: ((CGRect) -> Void)?
     var onHighlightStateChanged: ((Bool) -> Void)?
@@ -234,10 +249,12 @@ class ScreenViewController: SubscriberViewController<ScreenViewData>, NSWindowDe
     }
 
     override func update(with viewData: ScreenViewData) {
+        currentViewData = viewData
+
         if viewData.isWindowHighlighted != isWindowHighlighted {
             isWindowHighlighted = viewData.isWindowHighlighted
             onHighlightStateChanged?(isWindowHighlighted)
-            if isWindowHighlighted {
+            if isWindowHighlighted, isWindowVisible {
                 view.window?.orderFrontRegardless()
             }
         }
@@ -251,7 +268,6 @@ class ScreenViewController: SubscriberViewController<ScreenViewData>, NSWindowDe
             previousResolution = viewData.resolution
             previousScaleFactor = viewData.scaleFactor
             onDisplayConfigurationChanged?(viewData.resolution, viewData.scaleFactor)
-            stream = nil
             if let window = view.window {
                 let windowContentSize = CGSize(
                     width: viewData.resolution.width,
@@ -268,23 +284,49 @@ class ScreenViewController: SubscriberViewController<ScreenViewData>, NSWindowDe
                     }
                 }
             }
-            let stream = CGDisplayStream(
-                dispatchQueueDisplay: display.displayID,
-                outputWidth: Int(viewData.resolution.width * viewData.scaleFactor),
-                outputHeight: Int(viewData.resolution.height * viewData.scaleFactor),
-                pixelFormat: 1_111_970_369,
-                properties: [
-                    CGDisplayStream.showCursor: true,
-                ] as CFDictionary,
-                queue: .main,
-                handler: { [weak self] _, _, frameSurface, _ in
-                    if let surface = frameSurface {
-                        self?.view.layer?.contents = surface
-                    }
+            restartCapture()
+        }
+    }
+
+    private func restartCapture() {
+        stopCapture(clearContents: false)
+        startCaptureIfNeeded()
+    }
+
+    private func startCaptureIfNeeded() {
+        guard
+            isWindowVisible,
+            let viewData = currentViewData,
+            viewData.resolution != .zero
+        else {
+            return
+        }
+
+        let stream = CGDisplayStream(
+            dispatchQueueDisplay: display.displayID,
+            outputWidth: Int(viewData.resolution.width * viewData.scaleFactor),
+            outputHeight: Int(viewData.resolution.height * viewData.scaleFactor),
+            pixelFormat: 1_111_970_369,
+            properties: [
+                CGDisplayStream.showCursor: true,
+            ] as CFDictionary,
+            queue: .main,
+            handler: { [weak self] _, _, frameSurface, _ in
+                if let surface = frameSurface {
+                    self?.view.layer?.contents = surface
                 }
-            )
-            self.stream = stream
-            stream?.start()
+            }
+        )
+        self.stream = stream
+        stream?.start()
+    }
+
+    private func stopCapture(clearContents: Bool) {
+        stream?.stop()
+        stream = nil
+
+        if clearContents {
+            view.layer?.contents = nil
         }
     }
 
