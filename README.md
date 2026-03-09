@@ -84,6 +84,13 @@ make clean
 
 The project runs SwiftFormat from an Xcode build phase during compilation.
 
+## Credits
+
+DeskPad is based on the original project by Bastian Andelefski and contributors:
+https://github.com/Stengo/DeskPad
+
+This repository is a maintained fork by Aleks Advaisly with additional work on the compact title bar, menu bar controls, settings persistence, display snapshot publishing, and capture lifecycle behavior.
+
 ## License
 
 MIT -- see LICENSE.md.
