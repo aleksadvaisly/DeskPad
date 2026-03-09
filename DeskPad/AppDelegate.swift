@@ -351,10 +351,164 @@ private final class DisplaySnapshotPublisher {
     }
 }
 
+private final class TitleBarBackgroundView: NSView {
+    var fillColor: NSColor = .init(named: "TitleBarInactive") ?? .windowBackgroundColor {
+        didSet {
+            needsDisplay = true
+        }
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+    }
+
+    @available(*, unavailable)
+    required init?(coder _: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func draw(_: NSRect) {
+        fillColor.setFill()
+        bounds.fill()
+    }
+}
+
+private final class DeskPadWindowViewController: NSViewController, NSWindowDelegate {
+    static let titleBarHeight: CGFloat = 20
+    private let windowControlTopInset: CGFloat = 1
+    private let windowControlVerticalOffset: CGFloat = 6
+    private let titleBar = TitleBarBackgroundView()
+    private let body = NSView()
+    private let contentViewController: NSViewController
+    private var windowControls = [NSButton]()
+    var onWindowFrameChanged: ((CGRect) -> Void)?
+    var onWindowWillResize: ((NSWindow, NSSize) -> NSSize)?
+
+    init(contentViewController: NSViewController) {
+        self.contentViewController = contentViewController
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    @available(*, unavailable)
+    required init?(coder _: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func loadView() {
+        view = NSView()
+        view.wantsLayer = true
+        view.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+
+        titleBar.translatesAutoresizingMaskIntoConstraints = false
+
+        body.translatesAutoresizingMaskIntoConstraints = false
+        body.wantsLayer = true
+        body.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+
+        view.addSubview(body)
+        view.addSubview(titleBar)
+
+        addChild(contentViewController)
+        let contentView = contentViewController.view
+        contentView.translatesAutoresizingMaskIntoConstraints = false
+        body.addSubview(contentView)
+
+        NSLayoutConstraint.activate([
+            titleBar.topAnchor.constraint(equalTo: view.topAnchor),
+            titleBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            titleBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            titleBar.heightAnchor.constraint(equalToConstant: Self.titleBarHeight),
+
+            body.topAnchor.constraint(equalTo: titleBar.bottomAnchor),
+            body.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            body.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            body.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+
+            contentView.topAnchor.constraint(equalTo: body.topAnchor),
+            contentView.leadingAnchor.constraint(equalTo: body.leadingAnchor),
+            contentView.trailingAnchor.constraint(equalTo: body.trailingAnchor),
+            contentView.bottomAnchor.constraint(equalTo: body.bottomAnchor),
+        ])
+    }
+
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        layoutWindowControls()
+    }
+
+    func installWindowControls(for window: NSWindow) {
+        let buttons: [NSWindow.ButtonType] = [.closeButton, .miniaturizeButton, .zoomButton]
+        let controls = buttons.compactMap { window.standardWindowButton($0) }
+
+        guard controls.count == buttons.count else {
+            return
+        }
+
+        for button in controls {
+            button.removeFromSuperview()
+            button.translatesAutoresizingMaskIntoConstraints = true
+            titleBar.addSubview(button)
+        }
+        windowControls = controls
+        layoutWindowControls()
+    }
+
+    func windowDidMove(_: Notification) {
+        guard let frame = view.window?.frame else {
+            return
+        }
+        onWindowFrameChanged?(frame)
+    }
+
+    func windowDidResize(_: Notification) {
+        guard let frame = view.window?.frame else {
+            return
+        }
+        onWindowFrameChanged?(frame)
+    }
+
+    func windowWillResize(_ window: NSWindow, to frameSize: NSSize) -> NSSize {
+        onWindowWillResize?(window, frameSize) ?? frameSize
+    }
+
+    private func layoutWindowControls() {
+        guard windowControls.isEmpty == false else {
+            return
+        }
+
+        var currentX: CGFloat = 12
+        for button in windowControls {
+            let buttonSize = button.frame.size
+            let originY = max(0, floor(titleBar.bounds.height - buttonSize.height - windowControlTopInset + windowControlVerticalOffset))
+            button.setFrameOrigin(NSPoint(x: currentX, y: originY))
+            currentX += buttonSize.width + 6
+        }
+    }
+
+    func updateTitleBarAppearance(isHighlighted: Bool, style: InUseIndicatorStyle) {
+        titleBar.fillColor = if isHighlighted {
+            switch style {
+            case .info:
+                NSColor(named: "TitleBarActive") ?? .systemBlue
+            case .warning:
+                ScreenViewController.warningStripeColor
+            }
+        } else {
+            NSColor(named: "TitleBarInactive") ?? .windowBackgroundColor
+        }
+    }
+}
+
 class AppDelegate: NSObject, NSApplicationDelegate {
     var window: NSWindow!
     var statusItem: NSStatusItem!
-    private var viewController: ScreenViewController!
+    private var screenViewController: ScreenViewController!
+    private var deskPadWindowViewController: DeskPadWindowViewController!
     private var refreshRateMenuItem: NSMenuItem!
     private var inUseIndicatorMenuItem: NSMenuItem!
     private var alwaysOnTopMenuItem: NSMenuItem!
@@ -368,7 +522,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var isWindowVisible: Bool
     private var isAlwaysOnTop: Bool
     private let displaySnapshotPublisher = DisplaySnapshotPublisher()
-
     override init() {
         let settings = appSettingsStore.load()
         selectedRefreshRate = [30, 60].contains(settings.refreshRate) ? settings.refreshRate : AppSettings.default.refreshRate
@@ -386,24 +539,55 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         viewController.inUseIndicatorStyle = selectedInUseIndicator
         viewController.preferredDisplayMode = selectedDisplayMode
         viewController.preferredWindowFrame = selectedWindowFrame
+        viewController.topContentInset = DeskPadWindowViewController.titleBarHeight
         viewController.onDisplayConfigurationChanged = { [weak self] resolution, scaleFactor in
             self?.didUpdateDisplayConfiguration(resolution: resolution, scaleFactor: scaleFactor)
         }
         viewController.onWindowFrameChanged = { [weak self] frame in
             self?.didUpdateWindowFrame(frame)
         }
-        self.viewController = viewController
-        window = NSWindow(contentViewController: viewController)
-        window.delegate = viewController
-        window.title = "DeskPad"
+        screenViewController = viewController
+
+        let containerViewController = DeskPadWindowViewController(contentViewController: viewController)
+        containerViewController.onWindowFrameChanged = { [weak self] frame in
+            self?.didUpdateWindowFrame(frame)
+        }
+        containerViewController.onWindowWillResize = { [weak viewController] window, frameSize in
+            viewController?.windowWillResize(window, to: frameSize) ?? frameSize
+        }
+        viewController.onHighlightStateChanged = { [weak self] isHighlighted in
+            self?.deskPadWindowViewController?.updateTitleBarAppearance(
+                isHighlighted: isHighlighted,
+                style: self?.selectedInUseIndicator ?? .warning
+            )
+        }
+        deskPadWindowViewController = containerViewController
+
+        window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 920, height: 620),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentViewController = containerViewController
+        window.delegate = containerViewController
         window.titlebarAppearsTransparent = true
-        window.isMovableByWindowBackground = true
         window.titleVisibility = .hidden
-        window.backgroundColor = .white
+        window.isMovableByWindowBackground = true
+        window.hasShadow = true
+        window.backgroundColor = .windowBackgroundColor
+        containerViewController.installWindowControls(for: window)
+        containerViewController.updateTitleBarAppearance(isHighlighted: false, style: selectedInUseIndicator)
+        window.title = "DeskPad"
         window.contentMinSize = CGSize(width: 400, height: 300)
         window.contentMaxSize = CGSize(width: 5120, height: 2160)
         window.styleMask.insert(.resizable)
         window.collectionBehavior.insert(.fullScreenNone)
+        if let selectedWindowFrame {
+            window.setFrame(selectedWindowFrame.cgRect, display: true)
+        } else {
+            window.center()
+        }
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem.button?.image = NSImage(systemSymbolName: "display", accessibilityDescription: "DeskPad")
@@ -433,8 +617,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSApplication.shared.mainMenu = mainMenu
 
         store.dispatch(AppDelegateAction.didFinishLaunching)
-        persistSettings()
         displaySnapshotPublisher.start()
+        persistSettings()
     }
 
     private func makeRefreshRateMenuItem() -> NSMenuItem {
@@ -534,7 +718,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         selectedRefreshRate = sender.tag
-        viewController.refreshRate = CGFloat(selectedRefreshRate)
+        screenViewController?.refreshRate = CGFloat(selectedRefreshRate)
         updateRefreshRateMenuState()
         persistSettings()
     }
@@ -549,7 +733,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         selectedInUseIndicator = style
-        viewController.inUseIndicatorStyle = style
+        screenViewController.inUseIndicatorStyle = style
+        deskPadWindowViewController.updateTitleBarAppearance(
+            isHighlighted: screenViewController.isWindowCurrentlyHighlighted,
+            style: selectedInUseIndicator
+        )
         updateInUseIndicatorMenuState()
         persistSettings()
     }

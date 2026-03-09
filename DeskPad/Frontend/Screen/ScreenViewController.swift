@@ -34,7 +34,7 @@ struct SavedWindowFrame: Codable, Equatable {
 }
 
 class ScreenViewController: SubscriberViewController<ScreenViewData>, NSWindowDelegate {
-    private static let warningStripeColor = makeWarningStripeColor()
+    static let warningStripeColor = makeWarningStripeColor()
 
     var refreshRate: CGFloat = 60 {
         didSet {
@@ -55,13 +55,17 @@ class ScreenViewController: SubscriberViewController<ScreenViewData>, NSWindowDe
     }
 
     var preferredWindowFrame: SavedWindowFrame?
+    var topContentInset: CGFloat = 0
+    var isWindowCurrentlyHighlighted: Bool {
+        isWindowHighlighted
+    }
 
     var inUseIndicatorStyle: InUseIndicatorStyle = .warning {
         didSet {
             guard inUseIndicatorStyle != oldValue else {
                 return
             }
-            updateWindowBackgroundColor()
+            onHighlightStateChanged?(isWindowHighlighted)
         }
     }
 
@@ -78,6 +82,7 @@ class ScreenViewController: SubscriberViewController<ScreenViewData>, NSWindowDe
     private var previousScaleFactor: CGFloat?
     var onDisplayConfigurationChanged: ((CGSize, CGFloat) -> Void)?
     var onWindowFrameChanged: ((CGRect) -> Void)?
+    var onHighlightStateChanged: ((Bool) -> Void)?
     private var hasRestoredWindowFrame = false
 
     private static func makeWarningStripeColor() -> NSColor {
@@ -227,23 +232,10 @@ class ScreenViewController: SubscriberViewController<ScreenViewData>, NSWindowDe
         return VirtualDisplayModeSize(width: systemWidth, height: systemHeight)
     }
 
-    private func updateWindowBackgroundColor() {
-        view.window?.backgroundColor = if isWindowHighlighted {
-            switch inUseIndicatorStyle {
-            case .info:
-                NSColor(named: "TitleBarActive") ?? .systemBlue
-            case .warning:
-                Self.warningStripeColor
-            }
-        } else {
-            NSColor(named: "TitleBarInactive")
-        }
-    }
-
     override func update(with viewData: ScreenViewData) {
         if viewData.isWindowHighlighted != isWindowHighlighted {
             isWindowHighlighted = viewData.isWindowHighlighted
-            updateWindowBackgroundColor()
+            onHighlightStateChanged?(isWindowHighlighted)
             if isWindowHighlighted {
                 view.window?.orderFrontRegardless()
             }
@@ -260,12 +252,16 @@ class ScreenViewController: SubscriberViewController<ScreenViewData>, NSWindowDe
             onDisplayConfigurationChanged?(viewData.resolution, viewData.scaleFactor)
             stream = nil
             if let window = view.window {
-                window.contentAspectRatio = viewData.resolution
+                let windowContentSize = CGSize(
+                    width: viewData.resolution.width,
+                    height: viewData.resolution.height + topContentInset
+                )
+                window.contentAspectRatio = windowContentSize
                 if let preferredWindowFrame, hasRestoredWindowFrame == false {
                     window.setFrame(preferredWindowFrame.cgRect, display: true)
                     hasRestoredWindowFrame = true
                 } else {
-                    window.setContentSize(viewData.resolution)
+                    window.setContentSize(windowContentSize)
                     if isFirstConfiguration {
                         window.center()
                     }
@@ -300,7 +296,8 @@ class ScreenViewController: SubscriberViewController<ScreenViewData>, NSWindowDe
         else {
             return frameSize
         }
-        return window.frameRect(forContentRect: NSRect(origin: .zero, size: screenResolution)).size
+        let adjustedSize = CGSize(width: screenResolution.width, height: screenResolution.height + topContentInset)
+        return window.frameRect(forContentRect: NSRect(origin: .zero, size: adjustedSize)).size
     }
 
     func windowDidMove(_: Notification) {
