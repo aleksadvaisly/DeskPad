@@ -1,135 +1,78 @@
 # DeskPad
 
-DeskPad creates a real virtual display on macOS and mirrors it inside a lightweight app window. The goal is simple: give you a separate screen you can move windows onto, then share that cleaner workspace in a call, stream, or recording without rearranging your main desktop.
+You're sharing your screen during a call, but your 5K display makes everything tiny for the audience. Or you want a clean workspace to present from without rearranging your actual desktop. DeskPad gives you a virtual monitor: a real macOS display that lives inside an app window you can share.
 
-macOS sees `DeskPad Display` as a normal monitor. You can move apps to it, change its resolution in Displays settings, and share it like any other screen.
+## Getting Started
 
-## Requirements
-
-- macOS
-- Xcode command line tools / Xcode for building
-- Screen Recording permission for the live mirror
-
-## Install
+Build and install:
 
 ```sh
 make install
 ```
 
-This builds a Release app and installs it to `/Applications/DeskPad.app`.
+This builds a Release app and copies `DeskPad.app` to `/Applications`. You need Xcode installed.
 
-For a local Debug build:
+On first launch, macOS should ask for Screen Recording permission. Grant it in `System Settings -> Privacy & Security -> Screen Recording`, then restart the app if needed.
 
-```sh
-make build
-open build/Build/Products/Debug/DeskPad.app
-```
-
-## First Launch
-
-When DeskPad starts mirroring the virtual display, macOS should request `Screen Recording` permission. Grant it in:
-
-`System Settings -> Privacy & Security -> Screen Recording`
-
-If you grant permission after launch, restart DeskPad.
-
-If macOS does not show the prompt again because it already cached a previous decision, reset it with:
+If macOS already cached an old decision and does not show the prompt again, reset it with:
 
 ```sh
 tccutil reset ScreenCapture com.stengo.DeskPad
 ```
 
-## What DeskPad Does
+## How It Works
 
-- Creates a virtual monitor named `DeskPad Display`
-- Mirrors that monitor in a resizable app window
-- Lets you change the virtual display resolution through macOS Displays settings
-- Keeps the virtual display alive even when the mirror window is hidden
-- Publishes the current monitor layout to `~/.DeskPad/displays.json`
-- Persists DeskPad UI preferences in `~/.DeskPad/settings.json`
+Launching DeskPad is like plugging in a second monitor. macOS treats `DeskPad Display` as a real display, so you can move windows to it, set its resolution in `System Settings -> Displays`, and share it in any video call app.
 
-## Menu Bar Controls
+The app window mirrors everything on that virtual display in real time. The mirror window now uses a compact custom title bar with standard macOS window controls, and when your mouse moves onto the virtual display the title bar can switch to one of three indicators:
 
-DeskPad runs as a menu bar app and does not stay in the Dock.
+- `info` for a solid blue state
+- `warning` for diagonal yellow and anthracite stripes
+- `error` for a pulsing record-style red state
 
-The status menu currently includes:
+The virtual display starts from your current preferred mode and can be changed later through macOS Displays settings. DeskPad also exposes two refresh-rate presets, `30 Hz` and `60 Hz`.
 
-- `Hide Window` / `Show Window`
-- `Bring Back`
-- `Always On Top`
-- `Refresh Rate > 30 Hz / 60 Hz`
-- `In Use Indicator > info / warning / error`
+## Status Bar
+
+DeskPad runs from the menu bar and does not stay in the Dock. Click the display icon in the menu bar to:
+
+- `Hide Window` or `Show Window`
+- `Bring Back` to pull the mirror window to the front
+- toggle `Always On Top`
+- choose `Refresh Rate > 30 Hz / 60 Hz`
+- choose `In Use Indicator > info / warning / error`
 - `Quit DeskPad`
 
-### Refresh Rate
-
-The virtual display can be exposed as either `30 Hz` or `60 Hz`. The selected value is remembered between launches.
-
-### In Use Indicator
-
-When the mouse is on the virtual display, the compact title bar can highlight in one of three styles:
-
-- `info` - solid blue
-- `warning` - diagonal yellow/anthracite stripes
-- `error` - pulsing record-style red against dark anthracite
-
-The selected style is remembered between launches.
+Hiding the window does not remove the virtual display. Apps can stay on it and screen sharing can keep using it until you quit DeskPad.
 
 ## Saved State
 
-DeskPad stores its own preferences in `~/.DeskPad/settings.json`.
-
-Current persisted state includes:
+DeskPad stores its own settings in `~/.DeskPad/settings.json` and restores them on the next launch when possible. That includes:
 
 - refresh rate
-- in-use indicator style
+- selected in-use indicator
 - preferred virtual display mode
 - window position and size
-- window visibility
-- always-on-top state
-
-On startup, DeskPad restores these values when possible.
+- whether the mirror window is hidden or visible
+- whether the window should stay always on top
 
 ## Display Snapshot
 
-DeskPad writes `~/.DeskPad/displays.json` and refreshes it when screen configuration changes.
+DeskPad writes the current display layout to `~/.DeskPad/displays.json` and refreshes it whenever screen parameters change. The file includes display IDs, ordering, frames, visible frames, scale factors, and localized names for the active displays.
 
-The snapshot contains:
-
-- host metadata
-- active and main display IDs
-- display ordering
-- per-display frame and visible frame
-- scale factor
-- localized display names
-
-This is useful if you want external scripts or tools to react to the current display layout.
+This is useful for scripts or companion tools that need to react to the current monitor arrangement.
 
 ## Troubleshooting
 
-### Black or empty mirror window
+**Black or empty window:** Screen Recording permission is missing, stale, or denied. Re-check it in System Settings and restart DeskPad.
 
-Most often this means Screen Recording permission is missing, stale, or denied. Re-check it in System Settings and restart the app.
+**Prompt does not appear:** macOS may already have a stored TCC decision. Run `tccutil reset ScreenCapture com.stengo.DeskPad`, then launch the app again.
 
-### Prompt does not appear
+**Window not matching resolution:** change the resolution for `DeskPad Display` in macOS Displays settings. DeskPad will update the mirror window to match and remember the last selected mode.
 
-macOS may already have a stored TCC decision. Reset with:
+**Window hidden but display still exists:** that is expected. `Hide Window` removes only the local mirror window; the virtual display stays active until you quit the app.
 
-```sh
-tccutil reset ScreenCapture com.stengo.DeskPad
-```
-
-Then launch DeskPad again.
-
-### Wrong mirrored size
-
-Change the resolution for `DeskPad Display` in macOS Displays settings. DeskPad updates the mirror window to match and also remembers the last selected display mode.
-
-### Hidden window but display still exists
-
-That is intentional. `Hide Window` only removes the local mirror window from your desktop. The virtual display itself stays active until you quit DeskPad.
-
-## Build Commands
+## Building from Source
 
 ```sh
 make build
