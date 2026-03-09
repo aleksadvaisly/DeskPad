@@ -8,6 +8,7 @@ enum ScreenViewAction: Action {
 enum InUseIndicatorStyle: String, Codable {
     case info
     case warning
+    case error
 }
 
 struct VirtualDisplayModeSize: Codable, Equatable {

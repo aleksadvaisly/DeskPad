@@ -1,5 +1,6 @@
 import Cocoa
 import Darwin
+import QuartzCore
 import ReSwift
 
 enum AppDelegateAction: Action {
@@ -352,6 +353,18 @@ private final class DisplaySnapshotPublisher {
 }
 
 private final class TitleBarBackgroundView: NSView {
+    private enum DisplayMode {
+        case staticColor(NSColor)
+        case errorPulse
+    }
+
+    private static let inactiveColor = NSColor(named: "TitleBarInactive") ?? .windowBackgroundColor
+    private static let errorLowColor = NSColor(calibratedRed: 0.06375, green: 0.0675, blue: 0.075, alpha: 1)
+    private static let errorHighColor = NSColor(calibratedRed: 0.78, green: 0.15, blue: 0.18, alpha: 1)
+
+    private var displayMode: DisplayMode = .staticColor(inactiveColor)
+    private var pulseTimer: Timer?
+    private var pulseStartTime = CACurrentMediaTime()
     var fillColor: NSColor = .init(named: "TitleBarInactive") ?? .windowBackgroundColor {
         didSet {
             needsDisplay = true
@@ -368,16 +381,80 @@ private final class TitleBarBackgroundView: NSView {
         fatalError("init(coder:) has not been implemented")
     }
 
+    deinit {
+        pulseTimer?.invalidate()
+    }
+
+    func setStaticFillColor(_ color: NSColor) {
+        pulseTimer?.invalidate()
+        pulseTimer = nil
+        displayMode = .staticColor(color)
+        fillColor = color
+    }
+
+    func startErrorPulse() {
+        guard case .errorPulse = displayMode else {
+            displayMode = .errorPulse
+            pulseStartTime = CACurrentMediaTime()
+            pulseTimer?.invalidate()
+            let timer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+                self?.updateErrorPulseColor()
+            }
+            pulseTimer = timer
+            RunLoop.main.add(timer, forMode: .common)
+            updateErrorPulseColor()
+            return
+        }
+
+        if pulseTimer == nil {
+            pulseStartTime = CACurrentMediaTime()
+            let timer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+                self?.updateErrorPulseColor()
+            }
+            pulseTimer = timer
+            RunLoop.main.add(timer, forMode: .common)
+        }
+    }
+
     override func draw(_: NSRect) {
         fillColor.setFill()
         bounds.fill()
+    }
+
+    private func updateErrorPulseColor() {
+        let period = 2.025
+        let elapsed = CACurrentMediaTime() - pulseStartTime
+        let normalized = (cos((elapsed / period) * .pi * 2 - .pi) + 1) * 0.5
+        let color = mixColor(
+            from: Self.errorLowColor,
+            to: Self.errorHighColor,
+            progress: normalized
+        )
+        fillColor = color
+    }
+
+    private func mixColor(from start: NSColor, to end: NSColor, progress: Double) -> NSColor {
+        let clamped = CGFloat(min(max(progress, 0), 1))
+        guard
+            let startComponents = start.usingColorSpace(.deviceRGB),
+            let endComponents = end.usingColorSpace(.deviceRGB)
+        else {
+            return start
+        }
+
+        return NSColor(
+            calibratedRed: startComponents.redComponent + (endComponents.redComponent - startComponents.redComponent) * clamped,
+            green: startComponents.greenComponent + (endComponents.greenComponent - startComponents.greenComponent) * clamped,
+            blue: startComponents.blueComponent + (endComponents.blueComponent - startComponents.blueComponent) * clamped,
+            alpha: startComponents.alphaComponent + (endComponents.alphaComponent - startComponents.alphaComponent) * clamped
+        )
     }
 }
 
 private final class DeskPadWindowViewController: NSViewController, NSWindowDelegate {
     static let titleBarHeight: CGFloat = 20
     private let windowControlTopInset: CGFloat = 1
-    private let windowControlVerticalOffset: CGFloat = 6
+    private let windowControlVerticalOffset: CGFloat = 7
     private let titleBar = TitleBarBackgroundView()
     private let body = NSView()
     private let contentViewController: NSViewController
@@ -491,15 +568,18 @@ private final class DeskPadWindowViewController: NSViewController, NSWindowDeleg
     }
 
     func updateTitleBarAppearance(isHighlighted: Bool, style: InUseIndicatorStyle) {
-        titleBar.fillColor = if isHighlighted {
-            switch style {
-            case .info:
-                NSColor(named: "TitleBarActive") ?? .systemBlue
-            case .warning:
-                ScreenViewController.warningStripeColor
-            }
-        } else {
-            NSColor(named: "TitleBarInactive") ?? .windowBackgroundColor
+        guard isHighlighted else {
+            titleBar.setStaticFillColor(NSColor(named: "TitleBarInactive") ?? .windowBackgroundColor)
+            return
+        }
+
+        switch style {
+        case .info:
+            titleBar.setStaticFillColor(NSColor(named: "TitleBarActive") ?? .systemBlue)
+        case .warning:
+            titleBar.setStaticFillColor(ScreenViewController.warningStripeColor)
+        case .error:
+            titleBar.startErrorPulse()
         }
     }
 }
@@ -657,6 +737,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let options: [(title: String, style: InUseIndicatorStyle)] = [
             ("info", .info),
             ("warning", .warning),
+            ("error", .error),
         ]
         inUseIndicatorOptions = options.map { option in
             let item = NSMenuItem(
