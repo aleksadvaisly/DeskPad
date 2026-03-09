@@ -5,6 +5,34 @@ enum ScreenViewAction: Action {
     case setDisplayID(CGDirectDisplayID)
 }
 
+enum InUseIndicatorStyle: String, Codable {
+    case info
+    case warning
+}
+
+struct VirtualDisplayModeSize: Codable, Equatable {
+    let width: UInt
+    let height: UInt
+}
+
+struct SavedWindowFrame: Codable, Equatable {
+    let x: Double
+    let y: Double
+    let width: Double
+    let height: Double
+
+    init(_ rect: CGRect) {
+        x = Double(rect.origin.x)
+        y = Double(rect.origin.y)
+        width = Double(rect.size.width)
+        height = Double(rect.size.height)
+    }
+
+    var cgRect: CGRect {
+        CGRect(x: x, y: y, width: width, height: height)
+    }
+}
+
 class ScreenViewController: SubscriberViewController<ScreenViewData>, NSWindowDelegate {
     private static let warningStripeColor = makeWarningStripeColor()
 
@@ -14,6 +42,26 @@ class ScreenViewController: SubscriberViewController<ScreenViewData>, NSWindowDe
                 return
             }
             applyDisplaySettings()
+        }
+    }
+
+    var preferredDisplayMode: VirtualDisplayModeSize? {
+        didSet {
+            guard preferredDisplayMode != oldValue else {
+                return
+            }
+            applyDisplaySettings()
+        }
+    }
+
+    var preferredWindowFrame: SavedWindowFrame?
+
+    var inUseIndicatorStyle: InUseIndicatorStyle = .warning {
+        didSet {
+            guard inUseIndicatorStyle != oldValue else {
+                return
+            }
+            updateWindowBackgroundColor()
         }
     }
 
@@ -28,6 +76,9 @@ class ScreenViewController: SubscriberViewController<ScreenViewData>, NSWindowDe
     private var isWindowHighlighted = false
     private var previousResolution: CGSize?
     private var previousScaleFactor: CGFloat?
+    var onDisplayConfigurationChanged: ((CGSize, CGFloat) -> Void)?
+    var onWindowFrameChanged: ((CGRect) -> Void)?
+    private var hasRestoredWindowFrame = false
 
     private static func makeWarningStripeColor() -> NSColor {
         // 7:10 gives a slope of 0.7, which is ~35 degrees and tiles seamlessly.
@@ -122,7 +173,7 @@ class ScreenViewController: SubscriberViewController<ScreenViewData>, NSWindowDe
             return
         }
 
-        let systemResolution = currentSystemResolution()
+        let systemResolution = preferredDisplayMode ?? currentSystemResolution()
         let presetModes: [(width: UInt, height: UInt)] = [
             (5120, 1440),
             (5120, 2160),
@@ -162,7 +213,7 @@ class ScreenViewController: SubscriberViewController<ScreenViewData>, NSWindowDe
         display.apply(settings)
     }
 
-    private func currentSystemResolution() -> (width: UInt, height: UInt) {
+    private func currentSystemResolution() -> VirtualDisplayModeSize {
         let systemWidth: UInt
         let systemHeight: UInt
         if let mainScreen = NSScreen.main {
@@ -173,15 +224,26 @@ class ScreenViewController: SubscriberViewController<ScreenViewData>, NSWindowDe
             systemWidth = 1920
             systemHeight = 1080
         }
-        return (width: systemWidth, height: systemHeight)
+        return VirtualDisplayModeSize(width: systemWidth, height: systemHeight)
+    }
+
+    private func updateWindowBackgroundColor() {
+        view.window?.backgroundColor = if isWindowHighlighted {
+            switch inUseIndicatorStyle {
+            case .info:
+                NSColor(named: "TitleBarActive") ?? .systemBlue
+            case .warning:
+                Self.warningStripeColor
+            }
+        } else {
+            NSColor(named: "TitleBarInactive")
+        }
     }
 
     override func update(with viewData: ScreenViewData) {
         if viewData.isWindowHighlighted != isWindowHighlighted {
             isWindowHighlighted = viewData.isWindowHighlighted
-            view.window?.backgroundColor = isWindowHighlighted
-                ? Self.warningStripeColor
-                : NSColor(named: "TitleBarInactive")
+            updateWindowBackgroundColor()
             if isWindowHighlighted {
                 view.window?.orderFrontRegardless()
             }
@@ -192,12 +254,23 @@ class ScreenViewController: SubscriberViewController<ScreenViewData>, NSWindowDe
             viewData.resolution != previousResolution
             || viewData.scaleFactor != previousScaleFactor
         {
+            let isFirstConfiguration = previousResolution == nil
             previousResolution = viewData.resolution
             previousScaleFactor = viewData.scaleFactor
+            onDisplayConfigurationChanged?(viewData.resolution, viewData.scaleFactor)
             stream = nil
-            view.window?.setContentSize(viewData.resolution)
-            view.window?.contentAspectRatio = viewData.resolution
-            view.window?.center()
+            if let window = view.window {
+                window.contentAspectRatio = viewData.resolution
+                if let preferredWindowFrame, hasRestoredWindowFrame == false {
+                    window.setFrame(preferredWindowFrame.cgRect, display: true)
+                    hasRestoredWindowFrame = true
+                } else {
+                    window.setContentSize(viewData.resolution)
+                    if isFirstConfiguration {
+                        window.center()
+                    }
+                }
+            }
             let stream = CGDisplayStream(
                 dispatchQueueDisplay: display.displayID,
                 outputWidth: Int(viewData.resolution.width * viewData.scaleFactor),
@@ -228,6 +301,20 @@ class ScreenViewController: SubscriberViewController<ScreenViewData>, NSWindowDe
             return frameSize
         }
         return window.frameRect(forContentRect: NSRect(origin: .zero, size: screenResolution)).size
+    }
+
+    func windowDidMove(_: Notification) {
+        guard let frame = view.window?.frame else {
+            return
+        }
+        onWindowFrameChanged?(frame)
+    }
+
+    func windowDidResize(_: Notification) {
+        guard let frame = view.window?.frame else {
+            return
+        }
+        onWindowFrameChanged?(frame)
     }
 
     @objc private func didClickOnScreen(_ gestureRecognizer: NSGestureRecognizer) {
