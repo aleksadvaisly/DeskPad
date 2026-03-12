@@ -1,3 +1,4 @@
+import ApplicationServices
 import Cocoa
 import Darwin
 import QuartzCore
@@ -584,17 +585,253 @@ private final class DeskPadWindowViewController: NSViewController, NSWindowDeleg
     }
 }
 
-class AppDelegate: NSObject, NSApplicationDelegate {
+private final class AppWindowRelocationManager {
+    struct AppEntry {
+        let pid: pid_t
+        let name: String
+        let windowCount: Int
+        let icon: NSImage?
+
+        var menuTitle: String {
+            windowCount > 1 ? "\(name) (\(windowCount))" : name
+        }
+    }
+
+    enum MoveError: LocalizedError {
+        case accessibilityDenied
+        case virtualDisplayUnavailable
+        case mainDisplayUnavailable
+        case noWindowsFound
+
+        var errorDescription: String? {
+            switch self {
+            case .accessibilityDenied:
+                return "Accessibility permission is required to move other apps' windows."
+            case .virtualDisplayUnavailable:
+                return "The DeskPad virtual display is not ready."
+            case .mainDisplayUnavailable:
+                return "The main display could not be resolved."
+            case .noWindowsFound:
+                return "No movable windows were found on the DeskPad display."
+            }
+        }
+    }
+
+    func isAccessibilityTrusted(prompt: Bool) -> Bool {
+        let options = [
+            kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: prompt,
+        ] as CFDictionary
+        return AXIsProcessTrustedWithOptions(options)
+    }
+
+    func apps(on displayID: CGDirectDisplayID?) -> [AppEntry] {
+        guard
+            let displayID,
+            let displayFrame = NSScreen.screens.first(where: { $0.displayID == displayID })?.frame
+        else {
+            return []
+        }
+
+        let windowInfos = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        var groupedApps = [pid_t: (name: String, windowCount: Int, icon: NSImage?)]()
+
+        for windowInfo in windowInfos {
+            let layer = windowInfo[kCGWindowLayer as String] as? Int ?? 0
+            let alpha = windowInfo[kCGWindowAlpha as String] as? Double ?? 1
+            guard layer == 0, alpha > 0 else {
+                continue
+            }
+
+            let ownerPID = pid_t(windowInfo[kCGWindowOwnerPID as String] as? Int32 ?? 0)
+            guard ownerPID != 0, ownerPID != ProcessInfo.processInfo.processIdentifier else {
+                continue
+            }
+
+            guard
+                let windowBoundsDictionary = windowInfo[kCGWindowBounds as String] as? NSDictionary,
+                var windowBounds = CGRect(dictionaryRepresentation: windowBoundsDictionary)
+            else {
+                continue
+            }
+
+            if windowBounds.width < 32 || windowBounds.height < 32 {
+                continue
+            }
+
+            windowBounds.origin.y = displayFrame.maxY - windowBounds.maxY
+            guard windowBounds.intersects(displayFrame) else {
+                continue
+            }
+
+            let ownerName = (windowInfo[kCGWindowOwnerName as String] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let app = NSRunningApplication(processIdentifier: ownerPID)
+            let appName = app?.localizedName ?? ownerName ?? "App \(ownerPID)"
+
+            if var existing = groupedApps[ownerPID] {
+                existing.windowCount += 1
+                groupedApps[ownerPID] = existing
+            } else {
+                groupedApps[ownerPID] = (name: appName, windowCount: 1, icon: app?.icon)
+            }
+        }
+
+        return groupedApps
+            .map { pid, payload in
+                AppEntry(pid: pid, name: payload.name, windowCount: payload.windowCount, icon: payload.icon)
+            }
+            .sorted {
+                if $0.windowCount != $1.windowCount {
+                    return $0.windowCount > $1.windowCount
+                }
+                return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            }
+    }
+
+    func moveWindowsToMainDisplay(for pid: pid_t, sourceDisplayID: CGDirectDisplayID?) throws -> Int {
+        guard isAccessibilityTrusted(prompt: false) else {
+            throw MoveError.accessibilityDenied
+        }
+
+        guard
+            let sourceDisplayID,
+            let sourceScreen = NSScreen.screens.first(where: { $0.displayID == sourceDisplayID })
+        else {
+            throw MoveError.virtualDisplayUnavailable
+        }
+
+        let mainDisplayID = CGMainDisplayID()
+        guard
+            let targetScreen = NSScreen.screens.first(where: { $0.displayID == mainDisplayID })
+        else {
+            throw MoveError.mainDisplayUnavailable
+        }
+
+        let sourceFrame = sourceScreen.frame
+        let targetFrame = targetScreen.visibleFrame
+        let applicationElement = AXUIElementCreateApplication(pid)
+        var windowsValue: CFTypeRef?
+        let windowsError = AXUIElementCopyAttributeValue(
+            applicationElement,
+            kAXWindowsAttribute as CFString,
+            &windowsValue
+        )
+
+        guard windowsError == .success, let windows = windowsValue as? [AXUIElement] else {
+            throw MoveError.noWindowsFound
+        }
+
+        var movedWindowCount = 0
+        var movedAnyWindow = false
+        for window in windows {
+            if isWindowMinimized(window) {
+                continue
+            }
+
+            guard
+                let position = copyPointAttribute(kAXPositionAttribute as CFString, from: window),
+                let size = copySizeAttribute(kAXSizeAttribute as CFString, from: window)
+            else {
+                continue
+            }
+
+            let windowFrame = CGRect(origin: position, size: size)
+            let windowCenter = CGPoint(x: windowFrame.midX, y: windowFrame.midY)
+            guard sourceFrame.contains(windowCenter) || windowFrame.intersects(sourceFrame) else {
+                continue
+            }
+
+            let relativeX = windowFrame.minX - sourceFrame.minX
+            let relativeY = windowFrame.minY - sourceFrame.minY
+            let maxTargetX = max(targetFrame.minX, targetFrame.maxX - windowFrame.width)
+            let maxTargetY = max(targetFrame.minY, targetFrame.maxY - windowFrame.height)
+            var destinationPoint = CGPoint(
+                x: min(max(targetFrame.minX + relativeX, targetFrame.minX), maxTargetX),
+                y: min(max(targetFrame.minY + relativeY, targetFrame.minY), maxTargetY)
+            )
+
+            guard let destinationValue = AXValueCreate(.cgPoint, &destinationPoint) else {
+                continue
+            }
+            let moveError = AXUIElementSetAttributeValue(
+                window,
+                kAXPositionAttribute as CFString,
+                destinationValue
+            )
+
+            if moveError == .success {
+                movedWindowCount += 1
+                movedAnyWindow = true
+                _ = AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+            }
+        }
+
+        guard movedWindowCount > 0 else {
+            throw MoveError.noWindowsFound
+        }
+
+        if movedAnyWindow, let application = NSRunningApplication(processIdentifier: pid) {
+            application.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+        }
+
+        return movedWindowCount
+    }
+
+    private func isWindowMinimized(_ window: AXUIElement) -> Bool {
+        var minimizedValue: CFTypeRef?
+        let error = AXUIElementCopyAttributeValue(window, kAXMinimizedAttribute as CFString, &minimizedValue)
+        guard error == .success else {
+            return false
+        }
+        return (minimizedValue as? Bool) ?? false
+    }
+
+    private func copyPointAttribute(_ attribute: CFString, from element: AXUIElement) -> CGPoint? {
+        var value: CFTypeRef?
+        let error = AXUIElementCopyAttributeValue(element, attribute, &value)
+        guard error == .success, let value else {
+            return nil
+        }
+
+        let axValue = unsafeBitCast(value, to: AXValue.self)
+        guard AXValueGetType(axValue) == .cgPoint else {
+            return nil
+        }
+
+        var point = CGPoint.zero
+        return AXValueGetValue(axValue, .cgPoint, &point) ? point : nil
+    }
+
+    private func copySizeAttribute(_ attribute: CFString, from element: AXUIElement) -> CGSize? {
+        var value: CFTypeRef?
+        let error = AXUIElementCopyAttributeValue(element, attribute, &value)
+        guard error == .success, let value else {
+            return nil
+        }
+
+        let axValue = unsafeBitCast(value, to: AXValue.self)
+        guard AXValueGetType(axValue) == .cgSize else {
+            return nil
+        }
+
+        var size = CGSize.zero
+        return AXValueGetValue(axValue, .cgSize, &size) ? size : nil
+    }
+}
+
+class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var window: NSWindow!
     var statusItem: NSStatusItem!
     private var screenViewController: ScreenViewController!
     private var deskPadWindowViewController: DeskPadWindowViewController!
+    private var bringAppMenuItem: NSMenuItem!
     private var refreshRateMenuItem: NSMenuItem!
     private var inUseIndicatorMenuItem: NSMenuItem!
     private var alwaysOnTopMenuItem: NSMenuItem!
+    private lazy var bringAppSubmenu = NSMenu(title: "Bring App")
     private var refreshRateOptions = [NSMenuItem]()
     private var inUseIndicatorOptions = [NSMenuItem]()
     private let appSettingsStore = AppSettingsStore()
+    private let appWindowRelocationManager = AppWindowRelocationManager()
     private var selectedRefreshRate: Int
     private var selectedInUseIndicator: InUseIndicatorStyle
     private var selectedDisplayMode: VirtualDisplayModeSize?
@@ -673,8 +910,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem.button?.image = NSImage(systemSymbolName: "display", accessibilityDescription: "DeskPad")
         let statusMenu = NSMenu()
+        statusMenu.delegate = self
         statusMenu.addItem(NSMenuItem(title: "", action: #selector(toggleWindow), keyEquivalent: ""))
         statusMenu.addItem(NSMenuItem(title: "Bring Back", action: #selector(bringBackWindow), keyEquivalent: ""))
+        statusMenu.addItem(makeBringAppMenuItem())
         statusMenu.addItem(makeAlwaysOnTopMenuItem())
         statusMenu.addItem(makeRefreshRateMenuItem())
         statusMenu.addItem(makeInUseIndicatorMenuItem())
@@ -700,6 +939,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         store.dispatch(AppDelegateAction.didFinishLaunching)
         displaySnapshotPublisher.start()
         persistSettings()
+    }
+
+    private func makeBringAppMenuItem() -> NSMenuItem {
+        let item = NSMenuItem(title: "Bring App", action: nil, keyEquivalent: "")
+        bringAppSubmenu.delegate = self
+        item.submenu = bringAppSubmenu
+        bringAppMenuItem = item
+        rebuildBringAppSubmenu()
+        return item
     }
 
     private func makeRefreshRateMenuItem() -> NSMenuItem {
@@ -777,6 +1025,50 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         alwaysOnTopMenuItem?.state = isAlwaysOnTop ? .on : .off
     }
 
+    private func rebuildBringAppSubmenu() {
+        bringAppSubmenu.removeAllItems()
+
+        guard let virtualDisplayID = store.state.screenConfigurationState.displayID else {
+            let item = NSMenuItem(title: "Virtual display not ready", action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            bringAppSubmenu.addItem(item)
+            return
+        }
+
+        let appEntries = appWindowRelocationManager.apps(on: virtualDisplayID)
+        if appEntries.isEmpty {
+            let item = NSMenuItem(title: "No apps on DeskPad Display", action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            bringAppSubmenu.addItem(item)
+        } else {
+            for appEntry in appEntries {
+                let item = NSMenuItem(
+                    title: appEntry.menuTitle,
+                    action: #selector(bringAppToMainDisplay(_:)),
+                    keyEquivalent: ""
+                )
+                item.target = self
+                item.representedObject = NSNumber(value: appEntry.pid)
+                item.image = appEntry.icon
+                bringAppSubmenu.addItem(item)
+            }
+        }
+
+        if appWindowRelocationManager.isAccessibilityTrusted(prompt: false) == false {
+            if bringAppSubmenu.items.isEmpty == false {
+                bringAppSubmenu.addItem(.separator())
+            }
+
+            let permissionItem = NSMenuItem(
+                title: "Grant Accessibility Access…",
+                action: #selector(requestAccessibilityForBringApp),
+                keyEquivalent: ""
+            )
+            permissionItem.target = self
+            bringAppSubmenu.addItem(permissionItem)
+        }
+    }
+
     private func updateWindowVisibilityMenuState() {
         statusItem.menu?.item(at: 0)?.title = isWindowVisible ? "Hide Window" : "Show Window"
     }
@@ -823,6 +1115,36 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         )
         updateInUseIndicatorMenuState()
         persistSettings()
+    }
+
+    @objc private func requestAccessibilityForBringApp() {
+        _ = appWindowRelocationManager.isAccessibilityTrusted(prompt: true)
+    }
+
+    @objc private func bringAppToMainDisplay(_ sender: NSMenuItem) {
+        guard let pid = (sender.representedObject as? NSNumber)?.int32Value else {
+            return
+        }
+
+        do {
+            let movedWindowCount = try appWindowRelocationManager.moveWindowsToMainDisplay(
+                for: pid_t(pid),
+                sourceDisplayID: store.state.screenConfigurationState.displayID
+            )
+            NSLog("DeskPad moved %d window(s) for pid %d back to the main display.", movedWindowCount, pid)
+        } catch {
+            if case AppWindowRelocationManager.MoveError.accessibilityDenied = error {
+                _ = appWindowRelocationManager.isAccessibilityTrusted(prompt: true)
+            }
+            NSSound.beep()
+            NSLog("DeskPad failed to bring app back to main display: %@", error.localizedDescription)
+        }
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        if menu === statusItem.menu || menu === bringAppSubmenu {
+            rebuildBringAppSubmenu()
+        }
     }
 
     private func persistSettings() {
