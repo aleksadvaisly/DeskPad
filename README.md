@@ -1,6 +1,6 @@
 # DeskPad
 
-<p align="center"><img src="docs/swiftmonitor.png" width="520"></p>
+<p align="center"><img src="docs/swiftmonitor2.png" width="520"></p>
 
 You're sharing your screen during a call, but your 5K display makes everything tiny for the audience. Or you want a clean workspace to present from without rearranging your actual desktop. DeskPad gives you a virtual monitor: a real macOS display that lives inside an app window you can share.
 
